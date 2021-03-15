@@ -67,7 +67,6 @@ void os_getDevEui (u1_t* buf) { memcpy_P(buf, DEVEUI, 8);}
 static const u1_t PROGMEM APPKEY[16] = { 0x60, 0x2E, 0x4E, 0xC0, 0x16, 0xEB, 0x40, 0x39, 0x03, 0xCE, 0xD6, 0x4B, 0xA1, 0xBA, 0xEB, 0xDD };
 void os_getDevKey (u1_t* buf) {  memcpy_P(buf, APPKEY, 16);}
 
-static uint8_t mydata[] = "Hello, world!";
 static osjob_t sendjob;
 
 // Schedule TX every this many seconds (might become longer due to duty
@@ -86,14 +85,18 @@ const  lmic_pinmap lmic_pins = {
 };
 
 
-#define SENSOR_POWER 8
-#define HALL_SENSOR_PIN 7
+#define SENSOR_POWER_PIN 8
+
+#define HALL_SENSOR_PIN_1 7
 
 #define PROBE0_PIN A0
 #define PROBE1_PIN A1
 #define PROBE2_PIN A2
 #define PROBE3_PIN A3
 
+#define NUMBER_OF_HALL_SENSORS 4
+
+const int hallSensorPin[NUMBER_OF_HALL_SENSORS] = {HALL_SENSOR_PIN_1, NOT_A_PIN, NOT_A_PIN, NOT_A_PIN};
 
 #define SLEEP_TIME_MICROS 6e6
 
@@ -103,31 +106,42 @@ unsigned long lastExecutionTime = 0;
 
 
 // count how many pulses!
-volatile uint16_t pulses = 0;
+volatile uint16_t pulses[NUMBER_OF_HALL_SENSORS];
+
 // track the state of the pulse pin
-volatile uint8_t lastflowpinstate;
+volatile uint8_t lastflowpinstate[NUMBER_OF_HALL_SENSORS];
 // you can try to keep time of how long it is between pulses
-volatile uint32_t lastflowratetimer = 0;
+volatile uint32_t lastflowratetimer[NUMBER_OF_HALL_SENSORS];
 // and use that to calculate a flow rate
-volatile float flowrate;
+volatile float flowrate[NUMBER_OF_HALL_SENSORS];
 
 // Interrupt is called once a millisecond, looks for any pulses from the sensor!
 SIGNAL(TIMER0_COMPA_vect) {
-  uint8_t x = digitalRead(HALL_SENSOR_PIN);
-  
-  if (x == lastflowpinstate) {
-    lastflowratetimer++;
-    return; // nothing changed!
+
+  for (int i = 0; i < NUMBER_OF_HALL_SENSORS; ++i) {
+    int sensorPin = hallSensorPin[i];
+    if (sensorPin == NOT_A_PIN) {
+      continue;
+    }
+    
+    uint8_t x = digitalRead(sensorPin);
+
+    if (x == lastflowpinstate[i]) {
+      lastflowratetimer[i]++;
+      continue; // nothing changed!
+    }
+
+    if (x == HIGH) {
+      //low to high transition!
+      pulses[i]++;
+    }
+
+    lastflowpinstate[i] = x;
+    //TODO calculate proper flow rate here!!!
+    flowrate[i] = 1000.0;
+    flowrate[i] /= lastflowratetimer[i];  // in hertz
+    lastflowratetimer[i] = 0;
   }
-  
-  if (x == HIGH) {
-    //low to high transition!
-    pulses++;
-  }
-  lastflowpinstate = x;
-  flowrate = 1000.0;
-  flowrate /= lastflowratetimer;  // in hertz
-  lastflowratetimer = 0;
 }
 
 void useInterrupt(boolean v) {
@@ -271,15 +285,14 @@ void onEvent (ev_t ev) {
             break;
     }
 }
-CayenneLPP lpp(32);
+
 void do_send(osjob_t* j){
     // Check if there is not a current TX/RX job running
     if (LMIC.opmode & OP_TXRXPEND) {
         Serial.println(F("OP_TXRXPEND, not sending"));
     } else {
-
-        readSensorDataAndSend();
-        Serial.println(F("Packet queued"));
+      readSensorDataAndSend();
+      Serial.println(F("Packet queued"));
     }
     // Next TX is scheduled after TX_COMPLETE event.
 }
@@ -287,13 +300,6 @@ void do_send(osjob_t* j){
 void setup() {
     Serial.begin(9600);
     Serial.println(F("Starting"));
-
-    #ifdef VCC_ENABLE
-    // For Pinoccio Scout boards
-    pinMode(VCC_ENABLE, OUTPUT);
-    digitalWrite(VCC_ENABLE, HIGH);
-    delay(1000);
-    #endif
 
     // LMIC init
     os_init();
@@ -306,18 +312,26 @@ void setup() {
     do_send(&sendjob);
 }
 
+void initHallSensors() {
+  for (int i = 0; i < NUMBER_OF_HALL_SENSORS; ++i) {
+    int sensorPin = hallSensorPin[i];
+    pinMode(sensorPin, INPUT);
+    digitalWrite(sensorPin, HIGH);
+    pulses[i] = lastflowratetimer[i] = flowrate[i] = 0;
+    lastflowpinstate[i] = digitalRead(sensorPin);
+  }
+}
+
 void initSensor() {
   Serial.println("InitSensor BEGIN");
-  pinMode(SENSOR_POWER, OUTPUT);
+  pinMode(SENSOR_POWER_PIN, OUTPUT);
   pinMode(PROBE0_PIN, INPUT);
   pinMode(PROBE1_PIN, INPUT);
   pinMode(PROBE2_PIN, INPUT);
   pinMode(PROBE3_PIN, INPUT);
 
-  pinMode(HALL_SENSOR_PIN, INPUT);
+  initHallSensors();
 
-  digitalWrite(HALL_SENSOR_PIN, HIGH);
-  lastflowpinstate = digitalRead(HALL_SENSOR_PIN);
   useInterrupt(true);
   
   Serial.println("InitSensor begin SensorOff");
@@ -326,14 +340,14 @@ void initSensor() {
 }
 
 void sensorOn() {
-  digitalWrite(SENSOR_POWER, LOW);
+  digitalWrite(SENSOR_POWER_PIN, LOW);
 }
 
 void sensorOff() {
-  digitalWrite(SENSOR_POWER, HIGH); 
-
+  digitalWrite(SENSOR_POWER_PIN, HIGH); 
 }
 
+CayenneLPP lppBuffer(32);
 void readSensorDataAndSend() {
   sensorOn();
   delay(200);
@@ -348,16 +362,22 @@ void readSensorDataAndSend() {
   Serial.print(F("02"));
   Serial.print(F("Level:"));
   Serial.print(level);
-  Serial.print(F(", pulses:"));Serial.print(pulses);
+  Serial.print(F(", pulses:"));
+  for (int i = 0; i < NUMBER_OF_HALL_SENSORS; ++i) {
+    Serial.print(pulses[i]);
+    Serial.print(" ");
+  }
+  
   Serial.println();
 
-
-  lpp.reset();
-  lpp.addDigitalInput(1, level);
-  lpp.addDigitalInput(2, pulses);
+  lppBuffer.reset();
+  lppBuffer.addDigitalInput(1, level);
+  for (int i = 0; i < NUMBER_OF_HALL_SENSORS; ++i) {
+    lppBuffer.addDigitalInput(i + 1, pulses[i]);
+  }
          
   int confirmed = count++ == confirmedStep;
-  LMIC_setTxData2(1, lpp.getBuffer(), lpp.getSize(), confirmed);
+  LMIC_setTxData2(1, lppBuffer.getBuffer(), lppBuffer.getSize(), confirmed);
   if (confirmed) {
     count = 0;
   }
