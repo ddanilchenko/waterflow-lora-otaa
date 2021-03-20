@@ -54,7 +54,7 @@
 // first. When copying an EUI from ttnctl output, this means to reverse
 // the bytes. For TTN issued EUIs the last bytes should be 0xD5, 0xB3,
 // 0x70.
-static const u1_t PROGMEM APPEUI[8]={ 0x59, 0x2B, 0x03, 0xD0, 0x7E, 0xD5, 0xB3, 0x70 };
+static const u1_t PROGMEM APPEUI[8]= { 0x59, 0x2B, 0x03, 0xD0, 0x7E, 0xD5, 0xB3, 0x70 };
 void os_getArtEui (u1_t* buf) { memcpy_P(buf, APPEUI, 8);}
 
 // This should also be in little endian format, see above.
@@ -84,10 +84,11 @@ const  lmic_pinmap lmic_pins = {
     .dio = {2, 3, 4},
 };
 
-
 #define SENSOR_POWER_PIN 8
 
 #define HALL_SENSOR_PIN_1 7
+#define HALL_SENSOR_PIN_2 6
+#define HALL_SENSOR_PIN_3 5
 
 #define PROBE0_PIN A0
 #define PROBE1_PIN A1
@@ -96,7 +97,7 @@ const  lmic_pinmap lmic_pins = {
 
 #define NUMBER_OF_HALL_SENSORS 4
 
-const int hallSensorPin[NUMBER_OF_HALL_SENSORS] = {HALL_SENSOR_PIN_1, NOT_A_PIN, NOT_A_PIN, NOT_A_PIN};
+const int hallSensorPin[NUMBER_OF_HALL_SENSORS] = {HALL_SENSOR_PIN_1, HALL_SENSOR_PIN_2, HALL_SENSOR_PIN_3, NOT_A_PIN};
 
 #define SLEEP_TIME_MICROS 6e6
 
@@ -117,7 +118,6 @@ volatile float flowrate[NUMBER_OF_HALL_SENSORS];
 
 // Interrupt is called once a millisecond, looks for any pulses from the sensor!
 SIGNAL(TIMER0_COMPA_vect) {
-
   for (int i = 0; i < NUMBER_OF_HALL_SENSORS; ++i) {
     int sensorPin = hallSensorPin[i];
     if (sensorPin == NOT_A_PIN) {
@@ -306,6 +306,11 @@ void setup() {
     // Reset the MAC state. Session and pending data transfers will be discarded.
     LMIC_reset();
 
+    LMIC_setClockError(MAX_CLOCK_ERROR * 3 / 100);
+    LMIC_setLinkCheckMode(0);   // Disable link check validation
+    LMIC_setAdrMode(false);     // Disable ADR
+    LMIC.dn2Dr = DR_SF9; 
+
     initSensor();
 
     // Start job (sending automatically starts OTAA too)
@@ -323,7 +328,7 @@ void initHallSensors() {
 }
 
 void initSensor() {
-  Serial.println("InitSensor BEGIN");
+  //Serial.println(F("InitSensor BEGIN"));
   pinMode(SENSOR_POWER_PIN, OUTPUT);
   pinMode(PROBE0_PIN, INPUT);
   pinMode(PROBE1_PIN, INPUT);
@@ -334,9 +339,9 @@ void initSensor() {
 
   useInterrupt(true);
   
-  Serial.println("InitSensor begin SensorOff");
+  Serial.println(F("InitSensor begin SensorOff"));
   sensorOff();
-  Serial.println("InitSensor END");
+  Serial.println(F("InitSensor END"));
 }
 
 void sensorOn() {
@@ -349,6 +354,7 @@ void sensorOff() {
 
 CayenneLPP lppBuffer(32);
 void readSensorDataAndSend() {
+  //Serial.println(F("readSensorDataAndSend BEGIN"));
   sensorOn();
   delay(200);
   int l0 = digitalRead(PROBE0_PIN);
@@ -359,9 +365,9 @@ void readSensorDataAndSend() {
 
   int level = (l3 << 3) | (l2 << 2) | (l1 << 1) | l0;
   
-  Serial.print(F("02"));
-  Serial.print(F("Level:"));
+  Serial.print(F("Lvl:"));
   Serial.print(level);
+  
   Serial.print(F(", pulses:"));
   for (int i = 0; i < NUMBER_OF_HALL_SENSORS; ++i) {
     Serial.print(pulses[i]);
@@ -369,18 +375,22 @@ void readSensorDataAndSend() {
   }
   
   Serial.println();
-
+  Serial.println(F("start sending data"));
   lppBuffer.reset();
   lppBuffer.addDigitalInput(1, level);
+
+  
   for (int i = 0; i < NUMBER_OF_HALL_SENSORS; ++i) {
     lppBuffer.addDigitalInput(i + 1, pulses[i]);
   }
-         
+  Serial.println(F("done building buffer"));
   int confirmed = count++ == confirmedStep;
   LMIC_setTxData2(1, lppBuffer.getBuffer(), lppBuffer.getSize(), confirmed);
+  //LMIC_setTxData2(1, mydata, sizeof(mydata) - 1, confirmed);
   if (confirmed) {
     count = 0;
   }
+  Serial.println(F("done sending data"));
 }
 
 void loop() {
