@@ -244,7 +244,7 @@ void onEvent (ev_t ev) {
               Serial.println(F(" bytes of payload"));
             }
             if (LMIC.dataLen == 1 && LMIC.frame[LMIC.dataBeg] == EEPROM_RESET_CMD) {
-              resetEEPROM();
+              resetPulsesCounters();
             }
             // Schedule next transmission
             os_setTimedCallback(&sendjob, os_getTime()+sec2osticks(TX_INTERVAL), do_send);
@@ -304,12 +304,13 @@ void do_send(osjob_t* j){
     // Next TX is scheduled after TX_COMPLETE event.
 }
 
-void resetEEPROM() {
-  Serial.println(F("resetting EEPROM..."));
+void resetPulsesCounters() {
+  Serial.println(F("resetting pulses counters..."));
   for(int i = 0 ; i < NUMBER_OF_HALL_SENSORS; ++i) {
     EEPROM.put(EEPROM_START_ADDR + i * sizeof(pulses[i]), 0);
+    pulses[i] = 0;
   }
-  Serial.println(F("done resetting eeprom"));
+  Serial.println(F("done pulses counters"));
 }
 
 void setup() {
