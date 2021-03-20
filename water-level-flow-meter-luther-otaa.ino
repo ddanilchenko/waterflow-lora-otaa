@@ -32,6 +32,7 @@
  *******************************************************************************/
 
 #include "Arduino.h"
+#include <EEPROM.h>
 #include <lmic.h>
 #include <hal/hal.h>
 #include <SPI.h>
@@ -97,6 +98,8 @@ const  lmic_pinmap lmic_pins = {
 
 #define NUMBER_OF_HALL_SENSORS 4
 
+#define EEPROM_RESET_CMD 0x42
+
 const int hallSensorPin[NUMBER_OF_HALL_SENSORS] = {HALL_SENSOR_PIN_1, HALL_SENSOR_PIN_2, HALL_SENSOR_PIN_3, NOT_A_PIN};
 
 #define SLEEP_TIME_MICROS 6e6
@@ -104,7 +107,7 @@ const int hallSensorPin[NUMBER_OF_HALL_SENSORS] = {HALL_SENSOR_PIN_1, HALL_SENSO
 int delayMillis = SLEEP_TIME_MICROS / 1000;
 unsigned long lastExecutionTime = 0;
 
-
+const int EEPROM_START_ADDR = 0;
 
 // count how many pulses!
 volatile uint16_t pulses[NUMBER_OF_HALL_SENSORS];
@@ -134,6 +137,7 @@ SIGNAL(TIMER0_COMPA_vect) {
     if (x == HIGH) {
       //low to high transition!
       pulses[i]++;
+      EEPROM.put(EEPROM_START_ADDR + i * sizeof(pulses[i]), pulses[i]);
     }
 
     lastflowpinstate[i] = x;
@@ -239,6 +243,9 @@ void onEvent (ev_t ev) {
               Serial.print(LMIC.dataLen);
               Serial.println(F(" bytes of payload"));
             }
+            if (LMIC.dataLen == 1 && LMIC.frame[LMIC.dataBeg] == EEPROM_RESET_CMD) {
+              resetEEPROM();
+            }
             // Schedule next transmission
             os_setTimedCallback(&sendjob, os_getTime()+sec2osticks(TX_INTERVAL), do_send);
             break;
@@ -297,9 +304,18 @@ void do_send(osjob_t* j){
     // Next TX is scheduled after TX_COMPLETE event.
 }
 
+void resetEEPROM() {
+  Serial.println(F("resetting EEPROM..."));
+  for(int i = 0 ; i < NUMBER_OF_HALL_SENSORS; ++i) {
+    EEPROM.put(EEPROM_START_ADDR + i * sizeof(pulses[i]), 0);
+  }
+  Serial.println(F("done resetting eeprom"));
+}
+
 void setup() {
     Serial.begin(9600);
     Serial.println(F("Starting"));
+
 
     // LMIC init
     os_init();
@@ -322,7 +338,8 @@ void initHallSensors() {
     int sensorPin = hallSensorPin[i];
     pinMode(sensorPin, INPUT);
     digitalWrite(sensorPin, HIGH);
-    pulses[i] = lastflowratetimer[i] = flowrate[i] = 0;
+    EEPROM.get(EEPROM_START_ADDR + i * sizeof(pulses[i]), pulses[i]);
+    lastflowratetimer[i] = flowrate[i] = 0;
     lastflowpinstate[i] = digitalRead(sensorPin);
   }
 }
@@ -338,8 +355,7 @@ void initSensor() {
   initHallSensors();
 
   useInterrupt(true);
-  
-  Serial.println(F("InitSensor begin SensorOff"));
+
   sensorOff();
   Serial.println(F("InitSensor END"));
 }
@@ -352,7 +368,7 @@ void sensorOff() {
   digitalWrite(SENSOR_POWER_PIN, HIGH); 
 }
 
-CayenneLPP lppBuffer(32);
+CayenneLPP lppBuffer(42);
 void readSensorDataAndSend() {
   //Serial.println(F("readSensorDataAndSend BEGIN"));
   sensorOn();
@@ -381,12 +397,11 @@ void readSensorDataAndSend() {
 
   
   for (int i = 0; i < NUMBER_OF_HALL_SENSORS; ++i) {
-    lppBuffer.addDigitalInput(i + 1, pulses[i]);
+    lppBuffer.addLuminosity(i + 2, pulses[i]);
   }
   Serial.println(F("done building buffer"));
   int confirmed = count++ == confirmedStep;
   LMIC_setTxData2(1, lppBuffer.getBuffer(), lppBuffer.getSize(), confirmed);
-  //LMIC_setTxData2(1, mydata, sizeof(mydata) - 1, confirmed);
   if (confirmed) {
     count = 0;
   }
